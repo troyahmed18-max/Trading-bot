@@ -6,16 +6,18 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CRYPTO = {"BTCUSDT":"bitcoin","ETHUSDT":"ethereum","BNBUSDT":"binancecoin","SOLUSDT":"solana","XRPUSDT":"ripple","DOGEUSDT":"dogecoin"}
+CRYPTO = {"BTCUSDT":"BTC","ETHUSDT":"ETH","BNBUSDT":"BNB","SOLUSDT":"SOL","XRPUSDT":"XRP","DOGEUSDT":"DOGE","ADAUSDT":"ADA","LTCUSDT":"LTC"}
 FOREX = {"EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","USDCHF","EURGBP","EURJPY","GBPJPY"}
 
 def get_data(sym):
     s = sym.upper().replace("/","").replace("-","")
     if s in CRYPTO:
-        url = "https://api.coingecko.com/api/v3/coins/" + CRYPTO[s] + "/market_chart"
-        r = requests.get(url, params={"vs_currency":"usd","days":"1","interval":"hourly"}, timeout=15)
+        fsym = CRYPTO[s]
+        url = "https://min-api.cryptocompare.com/data/v2/histohour?fsym=" + fsym + "&tsym=USD&limit=100"
+        r = requests.get(url, timeout=15)
         r.raise_for_status()
-        return pd.Series([p[1] for p in r.json()["prices"]])
+        data = r.json()["Data"]["Data"]
+        return pd.Series([d["close"] for d in data])
     elif s in FOREX:
         base = s[:3]
         quote = s[3:]
@@ -135,7 +137,7 @@ async def btn(update, context):
     q = update.callback_query
     await q.answer()
     if q.data == "analyze":
-        await q.message.reply_text("📝 ارسل رمز الزوج:", parse_mode="Markdown")
+        await q.message.reply_text("📝 ارسل رمز الزوج:")
     elif q.data.startswith("r_"):
         await do(q.message.reply_text, q.data[2:])
 
