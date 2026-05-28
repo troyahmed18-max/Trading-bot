@@ -7,58 +7,43 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CRYPTO = {
-    "BTCUSDT":"BTC","ETHUSDT":"ETH","BNBUSDT":"BNB","SOLUSDT":"SOL",
-    "XRPUSDT":"XRP","DOGEUSDT":"DOGE","ADAUSDT":"ADA","LTCUSDT":"LTC",
-    "MATICUSDT":"MATIC","DOTUSDT":"DOT","AVAXUSDT":"AVAX","LINKUSDT":"LINK",
-}
-FOREX = {
-    "EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD",
-    "NZDUSD","USDCHF","EURGBP","EURJPY","GBPJPY",
-}
-COMMODITIES = {
-    "XAUUSD":"gc.f","GOLD":"gc.f","XAGUSD":"si.f","SILVER":"si.f",
-    "USOIL":"cl.f","OIL":"cl.f","UKOIL":"bz.f","BRENT":"bz.f",
-    "NATGAS":"ng.f","COPPER":"hg.f","PLATINUM":"pl.f",
-}
-EO_FOREX  = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","USDCHF","EURGBP","EURJPY","GBPJPY"]
-EO_CRYPTO = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","LTCUSDT"]
-EO_STOCKS = ["AAPL","TSLA","AMZN","GOOGL","MSFT","META","NVDA","NFLX","AMD","BABA"]
-EO_COMMOD = ["XAUUSD","XAGUSD","USOIL","UKOIL","NATGAS","COPPER","PLATINUM"]
+TD_KEY = os.environ.get("TWELVEDATA_API_KEY", "")
+
+CRYPTO = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","LTCUSDT"]
+FOREX  = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","USDCHF","EURGBP","EURJPY","GBPJPY"]
+STOCKS = ["AAPL","TSLA","AMZN","MSFT","META","NVDA","NFLX","AMD","BABA","UBER"]
+COMMOD = ["XAU/USD","XAG/USD","WTI/USD","BRENT/USD","NGAS/USD","XCU/USD","XPT/USD"]
+COMMOD_LABELS = ["XAUUSD","XAGUSD","USOIL","UKOIL","NATGAS","COPPER","PLATINUM"]
 DURATIONS = ["1 دقيقة","2 دقيقة","3 دقائق","5 دقائق","10 دقائق","15 دقيقة","30 دقيقة","1 ساعة"]
 
-def get_data(sym):
-    s = sym.upper().replace("/","").replace("-","").replace(" ","")
+def td_symbol(sym):
+    s = sym.upper().replace("-","").replace(" ","")
+    if s in [c.replace("/","") for c in COMMOD]:
+        for c in COMMOD:
+            if c.replace("/","") == s:
+                return c
     if s in CRYPTO:
-        url = "https://min-api.cryptocompare.com/data/v2/histohour?fsym=" + CRYPTO[s] + "&tsym=USD&limit=100"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()["Data"]["Data"]
-        return pd.Series([d["close"] for d in data])
-    if s in FOREX:
-        base = s[:3]
-        quote = s[3:]
-        url = "https://api.frankfurter.app/2024-01-01..?from=" + base + "&to=" + quote
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        prices = [v[quote] for v in r.json()["rates"].values()]
-        return pd.Series(prices) if len(prices) >= 30 else None
-    if s in COMMODITIES:
-        url = "https://stooq.com/q/d/l/?s=" + COMMODITIES[s] + "&i=d"
-        r = requests.get(url, timeout=15)
-        df = pd.read_csv(StringIO(r.text), on_bad_lines="skip")
-        if not df.empty and "Close" in df.columns:
-            vals = pd.to_numeric(df["Close"], errors="coerce").dropna()
-            if len(vals) >= 30:
-                return pd.Series(vals.values[-100:])
-    url = "https://stooq.com/q/d/l/?s=" + s.lower() + ".us&i=d"
-    r = requests.get(url, timeout=15)
-    df = pd.read_csv(StringIO(r.text), on_bad_lines="skip")
-    if not df.empty and "Close" in df.columns:
-        vals = pd.to_numeric(df["Close"], errors="coerce").dropna()
-        if len(vals) >= 30:
-            return pd.Series(vals.values[-100:])
-    return None
+        return s[:3] + "/USD"
+    if len(s) == 6 and s.isalpha():
+        return s[:3] + "/" + s[3:]
+    return s
+
+def get_data(sym):
+    symbol = td_symbol(sym)
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": "5min",
+        "outputsize": 100,
+        "apikey": TD_KEY,
+    }
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    if "values" not in data:
+        return None
+    closes = [float(v["close"]) for v in reversed(data["values"])]
+    return pd.Series(closes)
 
 def run_analysis(sym, duration="5 دقائق"):
     res = {"symbol":sym,"price":0.0,"signal":"WAIT","confidence":0,"ind":{},"error":None,"duration":duration}
@@ -164,31 +149,31 @@ async def start(update, context):
         "🤖 *بوت التداول الذكي*\n\nاختار نوع الأصل 👇",
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
+def make_grid(items, prefix, back="back_main"):
+    rows = []
+    for i in range(0, len(items), 2):
+        row = [InlineKeyboardButton(items[i], callback_data=prefix+items[i])]
+        if i+1 < len(items):
+            row.append(InlineKeyboardButton(items[i+1], callback_data=prefix+items[i+1]))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=back)])
+    return InlineKeyboardMarkup(rows)
+
 async def btn(update, context):
     q = update.callback_query
     await q.answer()
     cid = q.message.chat_id
 
-    def make_grid(items, prefix):
-        rows = []
-        for i in range(0, len(items), 2):
-            row = [InlineKeyboardButton(items[i], callback_data=prefix+items[i])]
-            if i+1 < len(items):
-                row.append(InlineKeyboardButton(items[i+1], callback_data=prefix+items[i+1]))
-            rows.append(row)
-        rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
-        return InlineKeyboardMarkup(rows)
-
     if q.data == "newpair":
         await q.message.reply_text("📝 ارسل رمز الزوج:\n`EURUSD` `BTCUSDT` `AAPL` `XAUUSD`", parse_mode="Markdown")
     elif q.data == "menu_forex":
-        await q.message.edit_reply_markup(make_grid(EO_FOREX, "sym_"))
+        await q.message.edit_reply_markup(make_grid(FOREX, "sym_"))
     elif q.data == "menu_crypto":
-        await q.message.edit_reply_markup(make_grid(EO_CRYPTO, "sym_"))
+        await q.message.edit_reply_markup(make_grid(CRYPTO, "sym_"))
     elif q.data == "menu_stocks":
-        await q.message.edit_reply_markup(make_grid(EO_STOCKS, "sym_"))
+        await q.message.edit_reply_markup(make_grid(STOCKS, "sym_"))
     elif q.data == "menu_commod":
-        await q.message.edit_reply_markup(make_grid(EO_COMMOD, "sym_"))
+        await q.message.edit_reply_markup(make_grid(COMMOD_LABELS, "sym_"))
     elif q.data == "back_main":
         kb = [
             [InlineKeyboardButton("💱 فوركس", callback_data="menu_forex"),
