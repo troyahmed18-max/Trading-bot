@@ -7,43 +7,84 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TD_KEY = os.environ.get("TWELVEDATA_API_KEY", "")
+FH_KEY = os.environ.get("FINNHUB_API_KEY", "")
 
-CRYPTO = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","LTCUSDT"]
-FOREX  = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","USDCHF","EURGBP","EURJPY","GBPJPY"]
-STOCKS = ["AAPL","TSLA","AMZN","MSFT","META","NVDA","NFLX","AMD","BABA","UBER"]
-COMMOD = ["XAU/USD","XAG/USD","WTI/USD","BRENT/USD","NGAS/USD","XCU/USD","XPT/USD"]
-COMMOD_LABELS = ["XAUUSD","XAGUSD","USOIL","UKOIL","NATGAS","COPPER","PLATINUM"]
-DURATIONS = ["1 دقيقة","2 دقيقة","3 دقائق","5 دقائق","10 دقائق","15 دقيقة","30 دقيقة","1 ساعة"]
+CRYPTO_MAP = {
+    "BTCUSDT":"BTC","ETHUSDT":"ETH","BNBUSDT":"BNB","SOLUSDT":"SOL",
+    "XRPUSDT":"XRP","DOGEUSDT":"DOGE","ADAUSDT":"ADA","LTCUSDT":"LTC",
+    "MATICUSDT":"MATIC","DOTUSDT":"DOT","AVAXUSDT":"AVAX","LINKUSDT":"LINK",
+}
+FOREX_LIST  = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","NZDUSD","USDCHF","EURGBP","EURJPY","GBPJPY"]
+CRYPTO_LIST = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","LTCUSDT"]
+STOCKS_LIST = ["AAPL","TSLA","AMZN","MSFT","META","NVDA","NFLX","AMD","BABA","UBER"]
+COMMOD_LIST = ["XAUUSD","XAGUSD","USOIL","UKOIL","NATGAS","COPPER","PLATINUM"]
+DURATIONS   = ["1 دقيقة","2 دقيقة","3 دقائق","5 دقائق","10 دقائق","15 دقيقة","30 دقيقة","1 ساعة"]
 
-def td_symbol(sym):
-    s = sym.upper().replace("-","").replace(" ","")
-    if s in [c.replace("/","") for c in COMMOD]:
-        for c in COMMOD:
-            if c.replace("/","") == s:
-                return c
-    if s in CRYPTO:
-        return s[:3] + "/USD"
-    if len(s) == 6 and s.isalpha():
-        return s[:3] + "/" + s[3:]
-    return s
+FINNHUB_FOREX = {
+    "EURUSD":"OANDA:EUR_USD","GBPUSD":"OANDA:GBP_USD","USDJPY":"OANDA:USD_JPY",
+    "AUDUSD":"OANDA:AUD_USD","USDCAD":"OANDA:USD_CAD","NZDUSD":"OANDA:NZD_USD",
+    "USDCHF":"OANDA:USD_CHF","EURGBP":"OANDA:EUR_GBP","EURJPY":"OANDA:EUR_JPY",
+    "GBPJPY":"OANDA:GBP_JPY",
+}
+FINNHUB_COMMOD = {
+    "XAUUSD":"OANDA:XAU_USD","XAGUSD":"OANDA:XAG_USD",
+    "USOIL":"OANDA:BCO_USD","UKOIL":"OANDA:BCO_USD",
+}
 
-def get_data(sym):
-    symbol = td_symbol(sym)
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": symbol,
-        "interval": "5min",
-        "outputsize": 100,
-        "apikey": TD_KEY,
-    }
+import time
+
+def get_candles_finnhub(symbol, resolution="5", count=100):
+    now = int(time.time())
+    since = now - count * 5 * 60
+    url = "https://finnhub.io/api/v1/forex/candle"
+    params = {"symbol":symbol,"resolution":resolution,"from":since,"to":now,"token":FH_KEY}
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
-    if "values" not in data:
+    if data.get("s") != "ok" or not data.get("c"):
         return None
-    closes = [float(v["close"]) for v in reversed(data["values"])]
-    return pd.Series(closes)
+    return pd.Series(data["c"])
+
+def get_stock_candles(symbol, resolution="5", count=100):
+    now = int(time.time())
+    since = now - count * 5 * 60
+    url = "https://finnhub.io/api/v1/stock/candle"
+    params = {"symbol":symbol,"resolution":resolution,"from":since,"to":now,"token":FH_KEY}
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("s") != "ok" or not data.get("c"):
+        return None
+    return pd.Series(data["c"])
+
+def get_crypto_candles(symbol, resolution="60", count=100):
+    fsym = CRYPTO_MAP.get(symbol, symbol.replace("USDT",""))
+    url = "https://min-api.cryptocompare.com/data/v2/histohour"
+    params = {"fsym":fsym,"tsym":"USD","limit":count}
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    data = r.json()["Data"]["Data"]
+    return pd.Series([d["close"] for d in data])
+
+def get_data(sym):
+    s = sym.upper().replace("/","").replace("-","")
+    if s in CRYPTO_MAP:
+        return get_crypto_candles(s)
+    if s in FINNHUB_FOREX:
+        return get_candles_finnhub(FINNHUB_FOREX[s])
+    if s in FINNHUB_COMMOD:
+        return get_candles_finnhub(FINNHUB_COMMOD[s])
+    if s in ["NATGAS","COPPER","PLATINUM"]:
+        from io import StringIO
+        stooq = {"NATGAS":"ng.f","COPPER":"hg.f","PLATINUM":"pl.f"}
+        url = "https://stooq.com/q/d/l/?s=" + stooq[s] + "&i=d"
+        r = requests.get(url, timeout=15)
+        df = pd.read_csv(StringIO(r.text), on_bad_lines="skip")
+        if not df.empty and "Close" in df.columns:
+            vals = pd.to_numeric(df["Close"], errors="coerce").dropna()
+            if len(vals) >= 30:
+                return pd.Series(vals.values[-100:])
+    return get_stock_candles(s)
 
 def run_analysis(sym, duration="5 دقائق"):
     res = {"symbol":sym,"price":0.0,"signal":"WAIT","confidence":0,"ind":{},"error":None,"duration":duration}
@@ -149,31 +190,30 @@ async def start(update, context):
         "🤖 *بوت التداول الذكي*\n\nاختار نوع الأصل 👇",
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-def make_grid(items, prefix, back="back_main"):
+def make_grid(items, prefix):
     rows = []
     for i in range(0, len(items), 2):
         row = [InlineKeyboardButton(items[i], callback_data=prefix+items[i])]
         if i+1 < len(items):
             row.append(InlineKeyboardButton(items[i+1], callback_data=prefix+items[i+1]))
         rows.append(row)
-    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data=back)])
+    rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
     return InlineKeyboardMarkup(rows)
 
 async def btn(update, context):
     q = update.callback_query
     await q.answer()
     cid = q.message.chat_id
-
     if q.data == "newpair":
         await q.message.reply_text("📝 ارسل رمز الزوج:\n`EURUSD` `BTCUSDT` `AAPL` `XAUUSD`", parse_mode="Markdown")
     elif q.data == "menu_forex":
-        await q.message.edit_reply_markup(make_grid(FOREX, "sym_"))
+        await q.message.edit_reply_markup(make_grid(FOREX_LIST, "sym_"))
     elif q.data == "menu_crypto":
-        await q.message.edit_reply_markup(make_grid(CRYPTO, "sym_"))
+        await q.message.edit_reply_markup(make_grid(CRYPTO_LIST, "sym_"))
     elif q.data == "menu_stocks":
-        await q.message.edit_reply_markup(make_grid(STOCKS, "sym_"))
+        await q.message.edit_reply_markup(make_grid(STOCKS_LIST, "sym_"))
     elif q.data == "menu_commod":
-        await q.message.edit_reply_markup(make_grid(COMMOD_LABELS, "sym_"))
+        await q.message.edit_reply_markup(make_grid(COMMOD_LIST, "sym_"))
     elif q.data == "back_main":
         kb = [
             [InlineKeyboardButton("💱 فوركس", callback_data="menu_forex"),
